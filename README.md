@@ -10,7 +10,7 @@ With the two raw datasets consisting of 180K+ recipes and 700K+ recipe reviews f
 ## Two Versions of Approach
 
 ### MCMC Sampling Approach in R
-Using 'JAGS' package, we first specify the prior distributions of parameters and the likelihood function/model of response variable in our models, then run MCMC sampler on each model, and after conducting model selection and performance estimation from results of convergence diagnose(trace plots, gelman diagnose) and DIC values, we plot the posterior density distributions of each parameters. Detailed modeling process is shown in 'report_r.html' and 'code_r.Rmd'.
+Using 'JAGS' package, we first specified the prior distributions of parameters and the likelihood function/model of response variable in our models, then run MCMC sampler on each model, and after conducting model selection and performance estimation from results of convergence diagnose(trace plots, gelman diagnose) and DIC values, we plotted the posterior density distributions of each parameters. Detailed modeling process is in 'report_r.html' and 'code_r.Rmd'.
 
 ### Variational Inference Approach in Python
-For the fact that the datasets in this project were extremely large in size, MCMC sampling method was found to struggle. We used approximation with Variational Inference in Python to train these models on larger datasets, for improvement in data reliability. Detailed information is shown in 'report_python.pdf' and 'code_python.ipynb'.
+For the fact that the datasets in this project were extremely large in size, MCMC sampling method was found to struggle. We used approximation with Variational Inference in Python to train these models on larger datasets, for improvement in data reliability. Detailed information is in 'report_python.pdf' and 'code_python.ipynb'.
