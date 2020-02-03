@@ -1,0 +1,603 @@
+---
+title: "MCMC Sampling to Bayesian Modeling"
+author: "Jiaxing Qiu, Shenghua Wu"
+date: "12/13/2019"
+output: html_document
+---
+---
+## Part 1 - Background Knowledge
+
+***
+
+### Bayesian Statistical Modeling
+***
+* Bayes Theorem  
+\begin{align*}
+f(\theta | x) = \frac{f(x|\theta)g(\theta)}{\int f(x|\theta)g(\theta) d\theta}
+\end{align*}
+* Components:
+    + posterior distribution $f(\theta | x)$
+    + likelihood $f(x|\theta)$
+    + prior distribution $g(\theta)$
+    + normalizing constant $\int f(x|\theta)g(\theta) d\theta$
+
+***
+* Regular vs. Bayesian
+    + Regular Machine Learning process is a set of methods for creating predictive or inferential models only based on observed data.
+    + Bayesian Mechine Learning is an approach to specify and fit a model that combines prior beliefs with the observed data. 
+    + Under the framework of Bayesian statistics, a regular machine learning model can be viewed as a special case with no prior information given, in other words, we choose a uninformative prior  (constant distribution) for the model.
+
+***
+
+### Sampling approach - MCMC method
+
+***
+* Mante Carlo Estimation
+    + After we make the assumptions for the model in terms of probability distributions, use the observed data to fit the model, and finally calculate the values for the unknown parameters, we get the closed form of that distribution. 
+    + Then we want to generate inferential information from our model based on important statistics (quantities). These statistics of interest can be the mean, the mode, the variance, or the probability of some events. 
+    + All of these calculation involves integration, which can be very difficult or impossible to get a close-formed expression that contains only known parameters. i.e. The formular for expected value(mean) is as follows:
+\begin{align*}
+E(\theta) = \int{\theta p(\theta)}d\theta
+\end{align*}
+    + Monte Carlo estimation refers to simulating hypothtical draws from a complicated probability distribution to estimate the statistics above without doing integratation.
+    + The concept behind Monte Carlo estimation is nothing more than Central Limit Theorem. More details can be found in the following Wikipedia link: https://en.wikipedia.org/wiki/Central_limit_theorem . 
+
+***
+* Markov Chain
+    + Markov assumption:
+\begin{align*}
+p(X_{t+1} | X_{t},X_{t-1},...,X_{2},X_{1}) = p(X_{t+1} | X_{t})
+\end{align*}
+    + Concept: Using a Markov Chain, the transition (choose the next sample/state) only depends on the current sample/state.
+    + More details can be found in the following link: https://en.wikipedia.org/wiki/Markov_chain .
+
+***
+
+* Reasons for MCMC Sampling Methods
+    + The integral in the normalizing constant term in Bayesia model is most time intractable, and the format of posterior distribution is too complicated to be from any known probability distribution family.
+    + Based on the concept of 'Monte Carlo Estimation', we can estimate the statistics of interest(i.e. mean, mode, standard deviation...) using the samples from posterior distribution directly.
+    + Compared to other sampling methods (grid search, rejection sampling, importance sampling, etc.), Markov Chain Monte Carlo sampling method works better on:
+        (1) it can sample from more complicated posterior distributions at a faster speed.
+        (2) we only need to specify two components in a bayesian model - the prior and likelihood, before running a MCMC algorithm. It requiers neither the exact expression of the posterior distribution, nor the integratation in the normalizing constant at all.
+
+***
+        
+### Practise with R
+
+***
+
+* R packages for MCMC
+    + The package we can use to conduct MCMC methods in R includes 'JAGS(Juat Another Gibbs Sampler)', 'rjags' and 'R2jags'. 
+    + To download, install and set up these packages, we can follow the instructiona in this link: http://mcmc-jags.sourceforge.net
+
+***
+
+* Main steps for modeling in 'JAGS'
+    + 1. Specify the model
+    + 2. Set up the model
+    + 3. Run the MCMC sampler
+    + 4. Post processing
+    
+***
+
+## Part 2 - Case Study
+
+***
+
+To show how to use MCMC sampling methods for Bayesian modeling, we will use a real-world case to explore a food recipe and an intercation dataset. (https://www.kaggle.com/shuyangli94/food-com-recipes-and-user-interactions/data#RAW_recipes.csv) We are trying to find predictive relationships between recipes and customer reviews and mine interesting insights from recipes. We aimed to answer two specific questions: First, classify customer reviews to two categories (high as 5 or low as 1-4), based on minutes to cook, number of steps, number of ingredients, calories and six nutrition facts (total fat, sugar, sodium, protein, saturated_fat, carbohydrates) of a recipe.  Second, predict calories of a recipe, using these six nutrition facts. Such insights could predict fundamental recipe properties, such as calories and cooking/preparation time, and understand users’ behavior and preferences. This knowledge could be used to encourage healthy dietary choices.
+
+***
+```{r}
+# load packages
+library('rjags')
+library('coda')
+library('dplyr')
+```
+
+### Problem 1 
+
+```{r,echo=FALSE}
+data = read.csv(file.path('newdata.csv'))
+data = unique(data)
+recipe = read.csv('recipe.csv')
+rownames(data) <- NULL
+```
+***
+### Data
+
+***
+
+In this case, we are going to classify customer reviews. We did some feature engineering(not specified here) to the dataset and reached the following dataset. 
+<br/><br/>
+```{r, echo=FALSE, results ='asis'}
+knitr::kable(head(data), format = "html")
+```
+<br/><br/>
+
+For this dataset, we will run logistic regression with and without hierachical priors. We will use rating as response variable (high as 5 or low as 1-4) and others as predictors. We first split the predictors and response variables. To make the model work efficiently in our computer, we will subset the training data to 1000 random data points.
+
+```{r}
+# ----- Predictors
+X = data[, which(names(data) != 'rating')]
+# ----- Response Variable 
+# add review column for 1/0 valued response: 1 - high-level review (rating == 5); 0 - low-level review (rating < 5)
+data$review = ifelse(data$rating == 5, 1, 0)
+Y = data$review
+
+# subset original dataset to 1000 rows of training data by random sampling, scale the training data
+set.seed(111)
+index = sample(1:nrow(data), size = 1000, replace = FALSE)
+X.train = data.frame(scale(X[index,], center = TRUE, scale = TRUE))
+Y.train = Y[index]
+```
+
+***
+
+#### Simple Logistic Regression
+The first model below was a relatively simple model, with 11 coefficients β (one intercept, ten predictors) sampled from a univariate unit Normal (mean 0, variance 1) distribution. Their dot product with the observed features formed the logit of the parameter p for the outcome, a Bernoulli random variable (whether the review was for 5 stars, or not).
+
+![model1.1](1.1.png)
+
+##### 1. Specify the model
+
+```{r}
+mod_string = "model{
+  for(i in 1:1000){
+    y[i] ~ dbern(p[i])
+    logit(p[i]) = itc + b[1]*minutes[i] + b[2]*n_steps[i] + 
+      b[3]*n_ingredients[i] + b[4]*calories[i] + 
+      b[5]*total_fat[i] + b[6]*sugar[i] + b[7]*sodium[i] + 
+      b[8]*protein[i] + b[9]*saturated_fat[i] +
+      b[10]*carbohydrates[i]
+  }
+  # uninformative prior for intercept
+  itc ~ dnorm(0.0, 1.0/25.0)
+  # uninformative prior for coefficients
+  for(j in 1:10){
+    b[j] ~ dnorm(0.0, 1.0/25.0)
+  }
+}"
+```
+
+##### 2. Set up the Model
+```{r}
+# monitor target posterior parameters
+params = c('b', 'itc')
+# training data for the model
+data_jags = list(y = Y.train, 
+                 minutes = X.train[,'minutes'], 
+                 n_steps = X.train[,'n_steps'], 
+                 n_ingredients = X.train[, 'n_ingredients'],
+                 calories = X.train[,'calories'],
+                 total_fat = X.train[,'total_fat'],
+                 sugar = X.train[,'sugar'],
+                 sodium = X.train[,'sodium'],
+                 protein = X.train[,'protein'],
+                 saturated_fat = X.train[,'saturated_fat'],
+                 carbohydrates = X.train[,'carbohydrates'])
+# generate jags model object
+mod1.1 = jags.model(textConnection(mod_string), data = data_jags, n.chains = 3)
+# burn-in
+update(mod1.1, 1e3)
+```
+
+##### 3. Fit the model - run MCMC sampler
+```{r}
+mod1.1_sim = coda.samples(mod1.1, variable.names = params, n.iter = 5e3)
+mod1.1_csim = as.mcmc(do.call(rbind, mod1.1_sim))
+```
+
+##### 4. Convergence Diagnose
+```{r}
+# traceplot per parameter
+# plot(mod1.1_sim, ask = TRUE) 
+# gelman diagnose
+gelman.diag(mod1.1_sim)
+# Model evaluation - DIC
+dic1.1 = dic.samples(mod1.1, n.iter = 1e3)
+# posterior distribution density plots
+par(mfrow = c(3,4))
+densplot(mod1.1_csim[,1:11])
+```
+##### 5. conclusion
+From the density plots, the posterior distributions of coefficients we want to estimate converge well using MCMC sampling method, and give us point estimates for coefficients.
+
+***
+
+#### Logistic Regression with Hierarchical Priors
+In the second model below, hierarchical priors were placed on both the mean μθ and standard deviation σθ of the coefficients’ Normal. The mean was itself a unit Normal, while the standard deviation was estimated form a Half-Cauchy distribution, i.e., the positive half of a Cauchy distribution.
+
+![model1.2](1.2.png)
+
+##### 1. Specify the model
+```{r}
+mod_string = "model{
+  for(i in 1:1000){
+    y[i] ~ dbern(p[i])
+    logit(p[i]) = itc + b[1]*minutes[i] + b[2]*n_steps[i] + 
+      b[3]*n_ingredients[i] + b[4]*calories[i] + 
+      b[5]*total_fat[i] + b[6]*sugar[i] + b[7]*sodium[i] + 
+      b[8]*protein[i] + b[9]*saturated_fat[i] +
+      b[10]*carbohydrates[i]
+  }
+  
+  # prior for intercept
+  itc ~ dnorm(mu, prec)
+  # prior for coefficients
+  for(j in 1:10){
+    b[j] ~ dnorm(mu, prec)
+  }
+  
+  # prior for mu and precision of prior for intercept and coefficients
+  mu ~ dnorm(0.0, 1.0/25.0)
+  prec ~ dgamma(1/2.0, 1*10.0/2.0)
+  
+}"
+```
+
+##### 2. Set up the Model
+
+```{r}
+# monitor target posterior parameters
+params = c('b', 'itc')
+# training data for the model
+data_jags = list(y = Y.train, 
+                 minutes = X.train[,'minutes'], 
+                 n_steps = X.train[,'n_steps'], 
+                 n_ingredients = X.train[, 'n_ingredients'],
+                 calories = X.train[,'calories'],
+                 total_fat = X.train[,'total_fat'],
+                 sugar = X.train[,'sugar'],
+                 sodium = X.train[,'sodium'],
+                 protein = X.train[,'protein'],
+                 saturated_fat = X.train[,'saturated_fat'],
+                 carbohydrates = X.train[,'carbohydrates'])
+# generate jags model object
+mod1.2 = jags.model(textConnection(mod_string), data = data_jags, n.chains = 3)
+# burn-in
+update(mod1.2, 1e3)
+```
+
+##### 3. Fit model - run MCMC sampler
+
+```{r}
+mod1.2_sim = coda.samples(mod1.2, variable.names = params, n.iter = 5e3)
+mod1.2_csim = as.mcmc(do.call(rbind, mod1.2_sim))
+```
+
+##### 4. Convergence Diagnose
+
+```{r}
+# traceplot
+# plot(mod1.2_sim, ask = TRUE) # plot per parameter
+# gelman diagnose
+gelman.diag(mod1.2_sim)
+# Model evaluation - DIC
+dic1.2 = dic.samples(mod1.2, n.iter = 1e3)
+# posterior distribution density plots
+par(mfrow = c(3,4))
+densplot(mod1.2_csim[,1:11])
+```
+
+##### 5. conclusion
+From the density plots, the posterior distributions of coefficients we want to estimate converge well using MCMC sampling method, and give us point estimates for coefficients.
+
+***
+
+### Problem 2
+
+#### Data
+
+In this case, we are going to predict the caloires based on nutrition facts of the recipe. We used the same original dataset, and did some feature engineering and got the following table.
+<br/><br/>
+```{r, echo=FALSE, results='asis'}
+knitr::kable(head(recipe), format = "html")
+```
+<br/><br/>
+For this dataset, we will run linear regression on five models with varying priors. We will use calories as response variable and others as predictors, so we split them as shown below. To make the model work efficiently in our computer, we will subset the traning data to 10000 random data points.
+
+```{r}
+# ----- Predictors
+X = recipe[, which(names(recipe) != 'calories')]
+# ----- Response Variable 
+Y = recipe$calories
+
+# subset original dataset to 1000 rows of training data by random sampling, scale the training data
+set.seed(222)
+index = sample(1:nrow(recipe), size = 10000, replace = FALSE)
+X.train = data.frame(scale(X[index,], center = TRUE, scale = TRUE))
+Y.train = Y[index]
+```
+
+#### Simple Linear Regression with uninformative prior
+For this first approach, we attempted a simple linear regression, with multivariate Normal coefficients β, a Half-Cauchy error term ση, and a Normal output variable for the calorie count.
+
+![model2.1](2.1.png)
+
+##### 1. Specify the model
+```{r}
+mod_string = "model{
+  for(i in 1:10000){
+    y[i] ~ dnorm(mu[i], 1.0/25.0 )
+    mu[i] = itc + b[1]*total_fat[i] + b[2]*sugar[i] + b[3]*sodium[i] + 
+      b[4]*protein[i] + b[5]*saturated_fat[i] + b[6]*carbohydrates[i]
+  }
+  # uninformative prior for intercept
+  itc ~ dnorm(0.0, 1.0/25.0)
+  # uninformative prior for coefficients
+  for(j in 1:6){
+    b[j] ~ dnorm(0.0, 1.0/25.0)
+  }
+}"
+```
+##### 2. Set up the Model
+```{r}
+# monitor target posterior parameters
+params = c('b', 'itc')
+# training data for the model
+data_jags = list(y = Y.train, 
+                 total_fat = X.train[,'total_fat'],
+                 sugar = X.train[,'sugar'],
+                 sodium = X.train[,'sodium'],
+                 protein = X.train[,'protein'],
+                 saturated_fat = X.train[,'saturated_fat'],
+                 carbohydrates = X.train[,'carbohydrates'])
+# generate jags model object
+mod2.1 = jags.model(textConnection(mod_string), data = data_jags, n.chains = 3)
+# burn-in
+update(mod2.1, 1e3)
+```
+
+##### 3. Fit model - run MCMC sampler
+
+```{r}
+mod2.1_sim = coda.samples(mod2.1, variable.names = params, n.iter = 5e3)
+mod2.1_csim = as.mcmc(do.call(rbind, mod2.1_sim))
+```
+
+##### 4. Convergence Diagnose
+
+```{r}
+# traceplot
+# plot(mod2.1_sim, ask = TRUE) # plot per parameter
+# gelman diagnose
+gelman.diag(mod2.1_sim)
+# Model evaluation - DIC
+dic2.1 = dic.samples(mod2.1, n.iter = 1e3)
+# posterior distribution density plots
+par(mfrow = c(2,4))
+densplot(mod2.1_csim[,1:7])
+```
+
+
+##### 5. conclusion
+From the density plots, the posterior distributions of coefficients we want to estimate converge well using MCMC sampling method, and give us point estimates for coefficients.
+
+***
+
+#### Simple Linear Regression with subjective prior
+For this approach, we replicated the same architecture but altered the parameters for β to use the known relationship between calories and nutritional information: 4 calories per gram of protein, plus 4 per gram of carbohydrates, plus 9 per gram of fat (and 0 for all other predictors).  (Note that sugars are already included in carbohydrates, and saturated fat in total fat.) We used hierachical modeling here. However, our subjective prior was disregarded, by using one prior for all predictors.
+
+![model2.2](2.2.png)
+
+##### 1. Specify the model
+```{r}
+mod_string = "model{
+  for(i in 1:10000){
+    y[i] ~ dnorm(mu[i], 1.0/25.0 )
+    mu[i] = itc + b[1]*total_fat[i] + b[2]*sugar[i] + b[3]*sodium[i] + 
+      b[4]*protein[i] + b[5]*saturated_fat[i] + b[6]*carbohydrates[i]
+  }
+  # uninformative prior for intercept
+  itc ~ dnorm(0.0, 1.0/25.0)
+  # uninformative prior for coefficients
+  b[1] ~ dnorm(9.0, 1.0/25.0)
+  b[2] ~ dnorm(0.0, 1.0/25.0)
+  b[3] ~ dnorm(0.0, 1.0/25.0)
+  b[4] ~ dnorm(4.0, 1.0/25.0)
+  b[5] ~ dnorm(9.0, 1.0/25.0)
+  b[6] ~ dnorm(4.0, 1.0/25.0)
+}"
+```
+
+##### 2. Set up the Model
+
+```{r}
+# monitor target posterior parameters
+params = c('b', 'itc')
+# training data for the model
+data_jags = list(y = Y.train, 
+                 total_fat = X.train[,'total_fat'],
+                 sugar = X.train[,'sugar'],
+                 sodium = X.train[,'sodium'],
+                 protein = X.train[,'protein'],
+                 saturated_fat = X.train[,'saturated_fat'],
+                 carbohydrates = X.train[,'carbohydrates'])
+# generate jags model object
+mod2.2 = jags.model(textConnection(mod_string), data = data_jags, n.chains = 3)
+# burn-in
+update(mod2.2, 1e3)
+```
+
+##### 3. Fit model - run MCMC sampler
+
+```{r}
+# 3. Fit model - run MCMC sampler
+mod2.2_sim = coda.samples(mod2.2, variable.names = params, n.iter = 5e3)
+mod2.2_csim = as.mcmc(do.call(rbind, mod2.2_sim))
+```
+##### 4. Convergence Diagnose
+
+```{r}
+# traceplot
+# plot(mod2.1_sim, ask = TRUE) # plot per parameter
+# gelman diagnose
+gelman.diag(mod2.2_sim)
+# Model evaluation - DIC
+dic2.2 = dic.samples(mod2.2, n.iter = 1e3)
+# posterior distribution density plots
+par(mfrow = c(2,4))
+densplot(mod2.2_csim[,1:7])
+```
+
+
+##### 5. conclusion
+From the density plots, the posterior distributions of coefficients we want to estimate converge well using MCMC sampling method, and give us point estimates for coefficients.
+
+***
+
+
+#### Hierarchical Linear Regression with uninformative prior
+In this approach, we added a hierarchical μθ only for the three “true” predictors (protein, carbohydrates, total fat).
+
+![model2.3](2.3.png)
+
+##### 1. Specify the model
+```{r}
+mod_string = "model{
+  for(i in 1:10000){
+    y[i] ~ dnorm(mean[i], prec_error)
+    mean[i] = itc + b[1]*total_fat[i] + b[2]*sugar[i] + b[3]*sodium[i] + b[4]*protein[i] + b[5]*saturated_fat[i] + b[6]*carbohydrates[i]
+  }
+  # uninformative prior for intercept
+  itc ~ dnorm(mu, prec)
+  # uninformative prior for coefficients
+  for(j in 1:6){
+    b[j] ~ dnorm(mu, prec)
+  }
+  
+  # prior for prior
+  mu ~ dnorm(0.0, 1.0/25.0)
+  prec ~ dgamma(1/2.0, 1*10.0/2.0)
+  prec_error ~ dgamma(1/2.0, 5*10.0/2.0)
+}"
+```
+##### 2. Set up the Model
+
+```{r}
+# monitor target posterior parameters
+params = c('b', 'itc')
+# training data for the model
+data_jags = list(y = Y.train, 
+                 total_fat = X.train[,'total_fat'],
+                 sugar = X.train[,'sugar'],
+                 sodium = X.train[,'sodium'],
+                 protein = X.train[,'protein'],
+                 saturated_fat = X.train[,'saturated_fat'],
+                 carbohydrates = X.train[,'carbohydrates'])
+# generate jags model object
+mod2.3 = jags.model(textConnection(mod_string), data = data_jags, n.chains = 3)
+# burn-in
+update(mod2.3, 1e3)
+```
+##### 3. Fit model - run MCMC sampler
+
+```{r}
+mod2.3_sim = coda.samples(mod2.3, variable.names = params, n.iter = 5e3)
+mod2.3_csim = as.mcmc(do.call(rbind, mod2.3_sim))
+```
+##### 4. Convergence Diagnose
+
+```{r}
+# traceplot
+# plot(mod2.3_sim, ask = TRUE) # plot per parameter
+# gelman diagnose
+gelman.diag(mod2.3_sim)
+# Model evaluation - DIC
+dic2.3 = dic.samples(mod2.3, n.iter = 1e3)
+# posterior distribution density plots
+par(mfrow = c(2,4))
+densplot(mod2.3_csim[,1:7])
+```
+
+
+##### 5. conclusion
+From the density plots, the posterior distributions of coefficients we want to estimate converge well using MCMC sampling method, and give us point estimates for coefficients.
+
+***
+
+#### Hierarchical Linear Regression with subjective prior
+In this model, we used a Multivariate Normal prior  an independent prior for each β-coefficient.
+
+![model2.4](2.4.png)
+
+##### 1. Specify the model
+```{r}
+mod_string = "model{
+  for(i in 1:10000){
+    y[i] ~ dnorm(mu[i], prec_error)
+    mu[i] = itc + b[1]*total_fat[i] + b[2]*sugar[i] + b[3]*sodium[i] + 
+      b[4]*protein[i] + b[5]*saturated_fat[i] + b[6]*carbohydrates[i]
+  }
+  # prior for intercept
+  itc ~ dnorm(mu_itc, prec)
+  # prior for coefficients
+  b[1] ~ dnorm(mu1, prec)
+  b[2] ~ dnorm(mu2, prec)
+  b[3] ~ dnorm(mu3, prec)
+  b[4] ~ dnorm(mu4, prec)
+  b[5] ~ dnorm(mu5, prec)
+  b[6] ~ dnorm(mu6, prec)
+  
+  # prior for prior
+  mu_itc ~ dnorm(0.0, 1.0/25.0)
+  mu1 ~ dnorm(9.0, 1.0/25.0)
+  mu2 ~ dnorm(0.0, 1.0/25.0)
+  mu3 ~ dnorm(0.0, 1.0/25.0)
+  mu4 ~ dnorm(4.0, 1.0/25.0)
+  mu5 ~ dnorm(9.0, 1.0/25.0)
+  mu6 ~ dnorm(4.0, 1.0/25.0)
+  prec ~ dgamma(1/2.0, 1*10.0/2.0)
+  prec_error ~ dgamma(1/2.0, 5*10.0/2.0)
+}"
+```
+##### 2. Set up the Model
+
+```{r}
+# monitor target posterior parameters
+params = c('b', 'itc')
+# training data for the model
+data_jags = list(y = Y.train, 
+                 total_fat = X.train[,'total_fat'],
+                 sugar = X.train[,'sugar'],
+                 sodium = X.train[,'sodium'],
+                 protein = X.train[,'protein'],
+                 saturated_fat = X.train[,'saturated_fat'],
+                 carbohydrates = X.train[,'carbohydrates'])
+# generate jags model object
+mod2.4 = jags.model(textConnection(mod_string), data = data_jags, n.chains = 3)
+# burn-in
+update(mod2.4, 1e3)
+```
+##### 3. Fit model - run MCMC sampler
+
+```{r}
+mod2.4_sim = coda.samples(mod2.4, variable.names = params, n.iter = 5e3)
+mod2.4_csim = as.mcmc(do.call(rbind, mod2.4_sim))
+```
+##### 4. Convergence Diagnose
+
+```{r }
+# traceplot
+# plot(mod2.1_sim, ask = TRUE) # plot per parameter
+# gelman diagnose
+gelman.diag(mod2.4_sim)
+# Model evaluation - DIC
+dic2.4 = dic.samples(mod2.4, n.iter = 1e3)
+# posterior distribution density plots
+par(mfrow = c(2,4))
+densplot(mod2.4_csim[,1:7])
+```
+
+
+##### 5. conclusion
+From the density plots, the posterior distributions of coefficients we want to estimate converge well using MCMC sampling method, and give us point estimates for coefficients.
+
+***
+
+
+
+
+
+
+
